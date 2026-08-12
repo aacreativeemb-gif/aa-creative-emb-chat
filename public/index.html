@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AA Creative Emb — Chat Support</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1115;
+    color: #e6e6e6;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: 16px 20px;
+    background: #161a22;
+    border-bottom: 1px solid #262b35;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  header .dot { width: 9px; height: 9px; border-radius: 50%; background: #35d07f; }
+  header small { font-weight: 400; color: #9aa2b1; margin-left: auto; }
+
+  #chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .msg {
+    max-width: 75%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    font-size: 14.5px;
+  }
+  .user {
+    align-self: flex-end;
+    background: #2f6fed;
+    color: white;
+    border-bottom-right-radius: 2px;
+  }
+  .assistant {
+    align-self: flex-start;
+    background: #1e222c;
+    border-bottom-left-radius: 2px;
+  }
+  .assistant.loading { opacity: 0.6; font-style: italic; }
+
+  form#chatForm {
+    display: flex;
+    gap: 10px;
+    padding: 16px 20px;
+    background: #161a22;
+    border-top: 1px solid #262b35;
+  }
+  input {
+    flex: 1;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid #2c3140;
+    background: #0f1115;
+    color: #e6e6e6;
+    font-size: 15px;
+  }
+  input:focus { outline: 2px solid #2f6fed; }
+  button {
+    padding: 12px 20px;
+    border: none;
+    border-radius: 8px;
+    background: #2f6fed;
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Pre-chat form overlay */
+  #precontact {
+    position: fixed;
+    inset: 0;
+    background: rgba(10,11,15,0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 10;
+  }
+  .card {
+    background: #161a22;
+    border: 1px solid #262b35;
+    border-radius: 14px;
+    padding: 28px;
+    width: 100%;
+    max-width: 360px;
+  }
+  .card h2 { margin: 0 0 6px; font-size: 19px; }
+  .card p { margin: 0 0 18px; color: #9aa2b1; font-size: 14px; }
+  .card label { display: block; font-size: 13px; margin-bottom: 6px; color: #c3c8d3; }
+  .card input { width: 100%; margin-bottom: 14px; }
+  .card button { width: 100%; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="precontact">
+  <div class="card">
+    <h2>Chat with AA Creative Emb</h2>
+    <p>Just your name and email so we can help you better — then ask away!</p>
+    <form id="precontactForm">
+      <label for="nameInput">Name</label>
+      <input id="nameInput" type="text" required placeholder="Your name" />
+      <label for="emailInput">Email</label>
+      <input id="emailInput" type="email" required placeholder="you@example.com" />
+      <button type="submit">Start Chat</button>
+    </form>
+  </div>
+</div>
+
+<header>
+  <span class="dot"></span> AA Creative Emb Support
+  <small id="welcomeBack"></small>
+</header>
+<div id="chat"></div>
+<form id="chatForm" class="hidden">
+  <input id="input" type="text" placeholder="Type a message..." autocomplete="off" />
+  <button id="send" type="submit">Send</button>
+</form>
+
+<script>
+  const chatEl = document.getElementById('chat');
+  const chatForm = document.getElementById('chatForm');
+  const input = document.getElementById('input');
+  const sendBtn = document.getElementById('send');
+  const precontact = document.getElementById('precontact');
+  const precontactForm = document.getElementById('precontactForm');
+  const welcomeBack = document.getElementById('welcomeBack');
+
+  function addMessage(role, text, loading = false) {
+    const div = document.createElement('div');
+    div.className = `msg ${role}` + (loading ? ' loading' : '');
+    div.textContent = text;
+    chatEl.appendChild(div);
+    chatEl.scrollTop = chatEl.scrollHeight;
+    return div;
+  }
+
+  function showChat(visitor, history, isReturning) {
+    precontact.classList.add('hidden');
+    chatForm.classList.remove('hidden');
+
+    if (history && history.length) {
+      history.forEach(m => addMessage(m.role === 'user' ? 'user' : 'assistant', m.content));
+    } else {
+      const first = isReturning && visitor.name
+        ? `Welcome back, ${visitor.name}! How can I help you today?`
+        : `Hi ${visitor.name || 'there'}! I'm the AA Creative Emb support assistant — ask me anything about embroidery digitizing, vector art conversion, pricing, or turnaround times.`;
+      addMessage('assistant', first);
+    }
+
+    if (isReturning && visitor.name) {
+      welcomeBack.textContent = `Welcome back, ${visitor.name}`;
+    }
+    input.focus();
+  }
+
+  // On load: check if this browser already has a session (returning visitor).
+  // We call /api/session with no name/email first just to detect an existing cookie.
+  async function init() {
+    try {
+      const res = await fetch('/api/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const data = await res.json();
+      if (data.visitor && data.visitor.name) {
+        // Already have their name/email from before — skip the form.
+        showChat(data.visitor, data.history, data.isReturning);
+      }
+      // else: no name on file yet, leave the pre-chat form showing.
+    } catch (e) {
+      // If session check fails, just leave the form up.
+    }
+  }
+  init();
+
+  precontactForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('nameInput').value.trim();
+    const email = document.getElementById('emailInput').value.trim();
+    if (!name || !email) return;
+
+    const res = await fetch('/api/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, email })
+    });
+    const data = await res.json();
+    showChat(data.visitor, data.history, data.isReturning);
+  });
+
+  chatForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+
+    addMessage('user', text);
+    input.value = '';
+    sendBtn.disabled = true;
+
+    const loadingDiv = addMessage('assistant', 'Typing...', true);
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Request failed');
+
+      loadingDiv.textContent = data.reply;
+      loadingDiv.classList.remove('loading');
+    } catch (err) {
+      loadingDiv.textContent = 'Sorry, something went wrong: ' + err.message;
+      loadingDiv.classList.remove('loading');
+    } finally {
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  });
+</script>
+</body>
+</html>

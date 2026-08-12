@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin — AA Creative Emb Chats</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1115;
+    color: #e6e6e6;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: 14px 20px;
+    background: #161a22;
+    border-bottom: 1px solid #262b35;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header button {
+    margin-left: auto;
+    background: transparent;
+    border: 1px solid #2c3140;
+    color: #c3c8d3;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+
+  #loginScreen {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .card {
+    background: #161a22;
+    border: 1px solid #262b35;
+    border-radius: 14px;
+    padding: 28px;
+    width: 100%;
+    max-width: 340px;
+  }
+  .card h2 { margin: 0 0 16px; font-size: 18px; }
+  .card input {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid #2c3140;
+    background: #0f1115;
+    color: #e6e6e6;
+    font-size: 15px;
+    margin-bottom: 12px;
+  }
+  .card button {
+    width: 100%;
+    padding: 12px;
+    border: none;
+    border-radius: 8px;
+    background: #2f6fed;
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .error { color: #f16b6b; font-size: 13px; margin-bottom: 10px; min-height: 16px; }
+
+  #dashboard { flex: 1; display: none; overflow: hidden; }
+  #dashboard.active { display: flex; }
+
+  #visitorList {
+    width: 340px;
+    border-right: 1px solid #262b35;
+    overflow-y: auto;
+    background: #12151b;
+  }
+  .visitorRow {
+    padding: 14px 16px;
+    border-bottom: 1px solid #1c202a;
+    cursor: pointer;
+  }
+  .visitorRow:hover { background: #1a1e27; }
+  .visitorRow.active { background: #1e2534; border-left: 3px solid #2f6fed; }
+  .visitorRow .name { font-weight: 600; font-size: 14.5px; }
+  .visitorRow .meta { font-size: 12.5px; color: #9aa2b1; margin-top: 3px; }
+  .badge {
+    display: inline-block;
+    background: #2c3140;
+    color: #c3c8d3;
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 20px;
+    margin-left: 6px;
+  }
+
+  #transcript { flex: 1; display: flex; flex-direction: column; }
+  #transcriptHeader {
+    padding: 16px 20px;
+    border-bottom: 1px solid #262b35;
+    background: #161a22;
+  }
+  #transcriptHeader h2 { margin: 0 0 4px; font-size: 16px; }
+  #transcriptHeader .meta { font-size: 13px; color: #9aa2b1; }
+  #transcriptBody { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 70%; padding: 10px 14px; border-radius: 12px; line-height: 1.4; white-space: pre-wrap; font-size: 14px; }
+  .msg.user { align-self: flex-end; background: #2f6fed; color: white; }
+  .msg.assistant { align-self: flex-start; background: #1e222c; }
+  .empty { color: #6b7280; padding: 40px; text-align: center; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AA Creative Emb — Admin Dashboard</h1>
+  <button id="logoutBtn" class="hidden">Log out</button>
+</header>
+
+<div id="loginScreen">
+  <div class="card">
+    <h2>Admin Login</h2>
+    <div class="error" id="loginError"></div>
+    <form id="loginForm">
+      <input id="passwordInput" type="password" placeholder="Admin password" required />
+      <button type="submit">Log in</button>
+    </form>
+  </div>
+</div>
+
+<div id="dashboard">
+  <div id="visitorList"></div>
+  <div id="transcript">
+    <div id="transcriptHeader" class="hidden">
+      <h2 id="transcriptName"></h2>
+      <div class="meta" id="transcriptMeta"></div>
+    </div>
+    <div id="transcriptBody"><div class="empty">Select a customer on the left to view their chat.</div></div>
+  </div>
+</div>
+
+<script>
+  const loginScreen = document.getElementById('loginScreen');
+  const dashboard = document.getElementById('dashboard');
+  const loginForm = document.getElementById('loginForm');
+  const loginError = document.getElementById('loginError');
+  const logoutBtn = document.getElementById('logoutBtn');
+  const visitorListEl = document.getElementById('visitorList');
+  const transcriptBody = document.getElementById('transcriptBody');
+  const transcriptHeader = document.getElementById('transcriptHeader');
+  const transcriptName = document.getElementById('transcriptName');
+  const transcriptMeta = document.getElementById('transcriptMeta');
+
+  let activeVisitorId = null;
+
+  function flagEmoji(countryCode) {
+    if (!countryCode || countryCode.length !== 2) return '🌐';
+    return countryCode.toUpperCase().replace(/./g, c =>
+      String.fromCodePoint(127397 + c.charCodeAt(0))
+    );
+  }
+
+  async function checkAuth() {
+    const res = await fetch('/api/admin/me');
+    const data = await res.json();
+    if (data.isAdmin) {
+      loginScreen.classList.add('hidden');
+      dashboard.classList.add('active');
+      logoutBtn.classList.remove('hidden');
+      loadVisitors();
+    }
+  }
+  checkAuth();
+
+  loginForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    loginError.textContent = '';
+    const password = document.getElementById('passwordInput').value;
+    const res = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password })
+    });
+    if (res.ok) {
+      loginScreen.classList.add('hidden');
+      dashboard.classList.add('active');
+      logoutBtn.classList.remove('hidden');
+      loadVisitors();
+    } else {
+      loginError.textContent = 'Wrong password, try again.';
+    }
+  });
+
+  logoutBtn.addEventListener('click', async () => {
+    await fetch('/api/admin/logout', { method: 'POST' });
+    location.reload();
+  });
+
+  async function loadVisitors() {
+    const res = await fetch('/api/admin/visitors');
+    const data = await res.json();
+    renderVisitorList(data.visitors || []);
+  }
+
+  function renderVisitorList(visitors) {
+    visitorListEl.innerHTML = '';
+    if (!visitors.length) {
+      visitorListEl.innerHTML = '<div class="empty">No customer chats yet.</div>';
+      return;
+    }
+    visitors.forEach(v => {
+      const row = document.createElement('div');
+      row.className = 'visitorRow' + (v.id === activeVisitorId ? ' active' : '');
+      row.innerHTML = `
+        <div class="name">${flagEmoji(v.countryCode)} ${v.name || 'Anonymous'} ${v.visitCount > 1 ? `<span class="badge">${v.visitCount} visits</span>` : ''}</div>
+        <div class="meta">${v.email || 'no email'}</div>
+        <div class="meta">${v.country || 'Unknown'}${v.city ? ', ' + v.city : ''} · ${v.ip || ''}</div>
+        <div class="meta">Last seen: ${new Date(v.lastSeenAt).toLocaleString()}</div>
+      `;
+      row.addEventListener('click', () => loadTranscript(v));
+      visitorListEl.appendChild(row);
+    });
+  }
+
+  async function loadTranscript(visitor) {
+    activeVisitorId = visitor.id;
+    document.querySelectorAll('.visitorRow').forEach(r => r.classList.remove('active'));
+    loadVisitors(); // re-render to highlight selection (simple approach)
+
+    const res = await fetch(`/api/admin/visitors/${visitor.id}/messages`);
+    const data = await res.json();
+
+    transcriptHeader.classList.remove('hidden');
+    transcriptName.textContent = `${flagEmoji(visitor.countryCode)} ${visitor.name || 'Anonymous'}`;
+    transcriptMeta.textContent = `${visitor.email || 'no email'} · ${visitor.country || 'Unknown'} · IP ${visitor.ip || 'n/a'} · ${visitor.visitCount} visit(s)`;
+
+    transcriptBody.innerHTML = '';
+    if (!data.messages || !data.messages.length) {
+      transcriptBody.innerHTML = '<div class="empty">No messages yet.</div>';
+      return;
+    }
+    data.messages.forEach(m => {
+      const div = document.createElement('div');
+      div.className = `msg ${m.role === 'user' ? 'user' : 'assistant'}`;
+      div.textContent = m.content;
+      transcriptBody.appendChild(div);
+    });
+    transcriptBody.scrollTop = transcriptBody.scrollHeight;
+  }
+</script>
+</body>
+</html>

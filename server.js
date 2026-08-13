@@ -78,6 +78,18 @@ function loadFile(filename, fallback) {
   }
 }
 
+// Admin can override these from the dashboard; falls back to the .md files
+// on disk if no override has been saved yet.
+function getEffectiveSystemPrompt() {
+  const settings = store.getSettings();
+  return settings.systemPrompt || loadFile('system-prompt.md', 'You are a helpful assistant.');
+}
+
+function getEffectiveKnowledge() {
+  const settings = store.getSettings();
+  return settings.knowledge || loadFile('knowledge.md', '');
+}
+
 // Simple keyword check to flag when a customer is asking for a real person.
 // Covers common English and Roman Urdu/Hindi phrasings.
 const HUMAN_REQUEST_PATTERNS = [
@@ -164,8 +176,8 @@ app.post('/api/chat', async (req, res) => {
       notifyVisitorsChanged();
     }
 
-    const systemPromptRaw = loadFile('system-prompt.md', 'You are a helpful assistant.');
-    const knowledge = loadFile('knowledge.md', '');
+    const systemPromptRaw = getEffectiveSystemPrompt();
+    const knowledge = getEffectiveKnowledge();
 
     const visitorContext = visitor?.name
       ? `\n\n---\nCustomer info: name is ${visitor.name}${visitor.country ? `, visiting from ${visitor.country}` : ''}.`
@@ -246,6 +258,24 @@ app.get('/api/admin/me', (req, res) => {
 
 app.get('/api/admin/visitors', requireAdmin, (req, res) => {
   res.json({ visitors: store.listVisitors() });
+});
+
+// AI Settings — lets the admin edit the system prompt and knowledge base
+// straight from the dashboard, without touching GitHub/Render.
+app.get('/api/admin/settings', requireAdmin, (req, res) => {
+  res.json({
+    systemPrompt: getEffectiveSystemPrompt(),
+    knowledge: getEffectiveKnowledge()
+  });
+});
+
+app.post('/api/admin/settings', requireAdmin, (req, res) => {
+  const { systemPrompt, knowledge } = req.body || {};
+  const updated = store.updateSettings({
+    ...(typeof systemPrompt === 'string' ? { systemPrompt } : {}),
+    ...(typeof knowledge === 'string' ? { knowledge } : {})
+  });
+  res.json({ ok: true, settings: updated });
 });
 
 app.get('/api/admin/visitors/:id/messages', requireAdmin, (req, res) => {

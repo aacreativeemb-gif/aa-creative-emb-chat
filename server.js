@@ -2,6 +2,9 @@ require('dotenv').config();
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const session = require('express-session');
+const http = require('http');
+const { Server } = require('socket.io');
+const sharedSession = require('express-socket.io-session');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -27,15 +30,45 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 
 app.use(express.json());
 app.use(cookieParser());
-app.use(
-  session({
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: { httpOnly: true, maxAge: 1000 * 60 * 60 * 8 } // 8 hour admin session
-  })
-);
+
+const sessionMiddleware = session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: { httpOnly: true, maxAge: 1000 * 60 * 60 * 8 } // 8 hour admin session
+});
+app.use(sessionMiddleware);
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ---------- Realtime (WebSocket) ----------
+// Replaces the old polling loops: the customer widget joins a room for its
+// own visitor ID, and the admin dashboard joins an 'admin' room. Whenever a
+// message is added or a visitor record changes, we push a small event —
+// clients then re-fetch just the data they need (kept simple and safe
+// against duplicate/out-of-order messages).
+const httpServer = http.createServer(app);
+const io = new Server(httpServer, { cors: { origin: true, credentials: true } });
+io.use(sharedSession(sessionMiddleware, { autoSave: true }));
+
+io.on('connection', (socket) => {
+  const { visitorId } = socket.handshake.auth || {};
+  const isAdmin = socket.handshake.session && socket.handshake.session.isAdmin;
+
+  if (isAdmin) {
+    socket.join('admin');
+  } else if (visitorId && store.getVisitor(visitorId)) {
+    socket.join(`visitor:${visitorId}`);
+  }
+});
+
+function notifyNewMessage(visitorId) {
+  io.to(`visitor:${visitorId}`).emit('messages-changed');
+  io.to('admin').emit('messages-changed', { visitorId });
+}
+
+function notifyVisitorsChanged() {
+  io.to('admin').emit('visitors-changed');
+}
 
 function loadFile(filename, fallback) {
   try {
@@ -43,6 +76,19 @@ function loadFile(filename, fallback) {
   } catch (e) {
     return fallback;
   }
+}
+
+// Simple keyword check to flag when a customer is asking for a real person.
+// Covers common English and Roman Urdu/Hindi phrasings.
+const HUMAN_REQUEST_PATTERNS = [
+  'human', 'real person', 'live agent', 'talk to someone', 'talk to a person',
+  'talk to a human', 'speak to someone', 'speak to a human', 'customer service rep',
+  'representative', 'agent se baat', 'insaan se baat', 'admin se baat', 'banda se baat',
+  'kisi insan', 'live chat', 'connect me to', 'talk to your team'
+];
+function isHumanRequest(text) {
+  const lower = text.toLowerCase();
+  return HUMAN_REQUEST_PATTERNS.some(p => lower.includes(p));
 }
 
 // ---------- Visitor session (customer side) ----------
@@ -90,6 +136,7 @@ app.post('/api/session', async (req, res) => {
 
     const history = store.getMessages(visitorId);
 
+    notifyVisitorsChanged();
     res.json({ visitor, history, isReturning: !!existing });
   } catch (err) {
     console.error(err);
@@ -110,6 +157,12 @@ app.post('/api/chat', async (req, res) => {
 
     const visitor = store.getVisitor(visitorId);
     store.addMessage(visitorId, 'user', message);
+    notifyNewMessage(visitorId);
+
+    if (isHumanRequest(message)) {
+      store.setNeedsHuman(visitorId, true);
+      notifyVisitorsChanged();
+    }
 
     const systemPromptRaw = loadFile('system-prompt.md', 'You are a helpful assistant.');
     const knowledge = loadFile('knowledge.md', '');
@@ -151,11 +204,20 @@ app.post('/api/chat', async (req, res) => {
     const reply = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
 
     store.addMessage(visitorId, 'assistant', reply);
+    notifyNewMessage(visitorId);
     res.json({ reply });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });
   }
+});
+
+// Lets the open chat widget poll for new messages (e.g. a manual admin reply)
+// without needing a full page reload.
+app.get('/api/messages', (req, res) => {
+  const visitorId = req.cookies[VISITOR_COOKIE];
+  if (!visitorId) return res.status(400).json({ error: 'No session' });
+  res.json({ messages: store.getMessages(visitorId) });
 });
 
 // ---------- Admin ----------
@@ -192,7 +254,28 @@ app.get('/api/admin/visitors/:id/messages', requireAdmin, (req, res) => {
   res.json({ visitor, messages: store.getMessages(req.params.id) });
 });
 
-app.listen(PORT, () => {
+// Admin sends a message directly to a customer — bypasses Gemini entirely,
+// so this is a genuine human reply that shows up in the customer's chat.
+app.post('/api/admin/visitors/:id/reply', requireAdmin, (req, res) => {
+  const { message } = req.body || {};
+  const visitor = store.getVisitor(req.params.id);
+  if (!visitor) return res.status(404).json({ error: 'Not found' });
+  if (!message || !message.trim()) return res.status(400).json({ error: 'Message is required' });
+
+  store.addMessage(req.params.id, 'assistant', message);
+  notifyNewMessage(req.params.id);
+  res.json({ ok: true });
+});
+
+// Admin marks a "needs human" conversation as handled.
+app.post('/api/admin/visitors/:id/resolve', requireAdmin, (req, res) => {
+  const visitor = store.setNeedsHuman(req.params.id, false);
+  if (!visitor) return res.status(404).json({ error: 'Not found' });
+  notifyVisitorsChanged();
+  res.json({ ok: true });
+});
+
+httpServer.listen(PORT, () => {
   console.log(`Chat agent running at http://localhost:${PORT}`);
   console.log(`Admin dashboard at http://localhost:${PORT}/admin.html`);
 });

@@ -99,6 +99,23 @@
     border-radius: 20px;
     margin-left: 6px;
   }
+  .badge.alert {
+    background: #e14848;
+    color: white;
+    font-weight: 600;
+  }
+  .visitorRow.needsHuman {
+    border-left: 3px solid #e14848;
+  }
+  #headerAlert {
+    background: #e14848;
+    color: white;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 20px;
+    margin-left: 10px;
+  }
 
   #transcript { flex: 1; display: flex; flex-direction: column; }
   #transcriptHeader {
@@ -113,12 +130,42 @@
   .msg.user { align-self: flex-end; background: #2f6fed; color: white; }
   .msg.assistant { align-self: flex-start; background: #1e222c; }
   .empty { color: #6b7280; padding: 40px; text-align: center; }
+
+  #replyBox {
+    padding: 14px 20px;
+    border-top: 1px solid #262b35;
+    background: #161a22;
+    display: none;
+    gap: 10px;
+  }
+  #replyBox.active { display: flex; }
+  #replyInput {
+    flex: 1;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid #2c3140;
+    background: #0f1115;
+    color: #e6e6e6;
+    font-size: 14px;
+  }
+  #replyBox button {
+    padding: 10px 16px;
+    border: none;
+    border-radius: 8px;
+    background: #2f6fed;
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  #resolveBtn { background: #35d07f; }
 </style>
 </head>
 <body>
 
 <header>
   <h1>AA Creative Emb — Admin Dashboard</h1>
+  <span id="headerAlert" class="hidden"></span>
   <button id="logoutBtn" class="hidden">Log out</button>
 </header>
 
@@ -141,9 +188,15 @@
       <div class="meta" id="transcriptMeta"></div>
     </div>
     <div id="transcriptBody"><div class="empty">Select a customer on the left to view their chat.</div></div>
+    <div id="replyBox">
+      <input id="replyInput" type="text" placeholder="Type a reply to send directly to this customer..." />
+      <button id="sendReplyBtn">Send</button>
+      <button id="resolveBtn">Mark Resolved</button>
+    </div>
   </div>
 </div>
 
+<script src="/socket.io/socket.io.js"></script>
 <script>
   const loginScreen = document.getElementById('loginScreen');
   const dashboard = document.getElementById('dashboard');
@@ -155,8 +208,14 @@
   const transcriptHeader = document.getElementById('transcriptHeader');
   const transcriptName = document.getElementById('transcriptName');
   const transcriptMeta = document.getElementById('transcriptMeta');
+  const headerAlert = document.getElementById('headerAlert');
+  const replyBox = document.getElementById('replyBox');
+  const replyInput = document.getElementById('replyInput');
+  const sendReplyBtn = document.getElementById('sendReplyBtn');
+  const resolveBtn = document.getElementById('resolveBtn');
 
   let activeVisitorId = null;
+  let lastNeedsHumanIds = new Set();
 
   function flagEmoji(countryCode) {
     if (!countryCode || countryCode.length !== 2) return '🌐';
@@ -173,6 +232,7 @@
       dashboard.classList.add('active');
       logoutBtn.classList.remove('hidden');
       loadVisitors();
+      connectAdminRealtime();
     }
   }
   checkAuth();
@@ -191,6 +251,7 @@
       dashboard.classList.add('active');
       logoutBtn.classList.remove('hidden');
       loadVisitors();
+      connectAdminRealtime();
     } else {
       loginError.textContent = 'Wrong password, try again.';
     }
@@ -213,11 +274,35 @@
       visitorListEl.innerHTML = '<div class="empty">No customer chats yet.</div>';
       return;
     }
+
+    const needingHuman = visitors.filter(v => v.needsHuman);
+    if (needingHuman.length > 0) {
+      headerAlert.textContent = `🔴 ${needingHuman.length} waiting for a human`;
+      headerAlert.classList.remove('hidden');
+      // Simple audio ping the first time we see a NEW visitor needing help.
+      const currentIds = new Set(needingHuman.map(v => v.id));
+      const isNew = [...currentIds].some(id => !lastNeedsHumanIds.has(id));
+      if (isNew && lastNeedsHumanIds.size > 0) {
+        try {
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          const osc = ctx.createOscillator();
+          osc.frequency.value = 880;
+          osc.connect(ctx.destination);
+          osc.start();
+          setTimeout(() => osc.stop(), 200);
+        } catch (e) {}
+      }
+      lastNeedsHumanIds = currentIds;
+    } else {
+      headerAlert.classList.add('hidden');
+      lastNeedsHumanIds = new Set();
+    }
+
     visitors.forEach(v => {
       const row = document.createElement('div');
-      row.className = 'visitorRow' + (v.id === activeVisitorId ? ' active' : '');
+      row.className = 'visitorRow' + (v.id === activeVisitorId ? ' active' : '') + (v.needsHuman ? ' needsHuman' : '');
       row.innerHTML = `
-        <div class="name">${flagEmoji(v.countryCode)} ${v.name || 'Anonymous'} ${v.visitCount > 1 ? `<span class="badge">${v.visitCount} visits</span>` : ''}</div>
+        <div class="name">${flagEmoji(v.countryCode)} ${v.name || 'Anonymous'} ${v.visitCount > 1 ? `<span class="badge">${v.visitCount} visits</span>` : ''} ${v.needsHuman ? `<span class="badge alert">Needs human</span>` : ''}</div>
         <div class="meta">${v.email || 'no email'}</div>
         <div class="meta">${v.country || 'Unknown'}${v.city ? ', ' + v.city : ''} · ${v.ip || ''}</div>
         <div class="meta">Last seen: ${new Date(v.lastSeenAt).toLocaleString()}</div>
@@ -238,20 +323,79 @@
     transcriptHeader.classList.remove('hidden');
     transcriptName.textContent = `${flagEmoji(visitor.countryCode)} ${visitor.name || 'Anonymous'}`;
     transcriptMeta.textContent = `${visitor.email || 'no email'} · ${visitor.country || 'Unknown'} · IP ${visitor.ip || 'n/a'} · ${visitor.visitCount} visit(s)`;
+    replyBox.classList.add('active');
 
     transcriptBody.innerHTML = '';
     if (!data.messages || !data.messages.length) {
       transcriptBody.innerHTML = '<div class="empty">No messages yet.</div>';
-      return;
+    } else {
+      data.messages.forEach(m => {
+        const div = document.createElement('div');
+        div.className = `msg ${m.role === 'user' ? 'user' : 'assistant'}`;
+        div.textContent = m.content;
+        transcriptBody.appendChild(div);
+      });
+      transcriptBody.scrollTop = transcriptBody.scrollHeight;
     }
-    data.messages.forEach(m => {
-      const div = document.createElement('div');
-      div.className = `msg ${m.role === 'user' ? 'user' : 'assistant'}`;
-      div.textContent = m.content;
-      transcriptBody.appendChild(div);
-    });
-    transcriptBody.scrollTop = transcriptBody.scrollHeight;
   }
+
+  sendReplyBtn.addEventListener('click', async () => {
+    const text = replyInput.value.trim();
+    if (!text || !activeVisitorId) return;
+    replyInput.value = '';
+    await fetch(`/api/admin/visitors/${activeVisitorId}/reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text })
+    });
+    const visitor = await (await fetch(`/api/admin/visitors/${activeVisitorId}/messages`)).json();
+    loadTranscript(visitor.visitor);
+  });
+
+  replyInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendReplyBtn.click();
+  });
+
+  resolveBtn.addEventListener('click', async () => {
+    if (!activeVisitorId) return;
+    await fetch(`/api/admin/visitors/${activeVisitorId}/resolve`, { method: 'POST' });
+    loadVisitors();
+  });
+
+  // Appends only new messages to the currently open transcript (if any),
+  // used by both the realtime socket event and the slow fallback poll.
+  async function refreshActiveTranscript() {
+    if (!activeVisitorId) return;
+    const res = await fetch(`/api/admin/visitors/${activeVisitorId}/messages`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const currentCount = transcriptBody.querySelectorAll('.msg').length;
+    if (data.messages && data.messages.length > currentCount) {
+      data.messages.slice(currentCount).forEach(m => {
+        const div = document.createElement('div');
+        div.className = `msg ${m.role === 'user' ? 'user' : 'assistant'}`;
+        div.textContent = m.content;
+        transcriptBody.appendChild(div);
+      });
+      transcriptBody.scrollTop = transcriptBody.scrollHeight;
+    }
+  }
+
+  // WebSocket connection: pushes instant updates instead of waiting on a
+  // timer. A slower fallback poll still runs underneath in case the socket
+  // connection drops (e.g. the free-tier server restarts).
+  let adminSocket = null;
+  function connectAdminRealtime() {
+    if (adminSocket) return;
+    adminSocket = io();
+    adminSocket.on('visitors-changed', loadVisitors);
+    adminSocket.on('messages-changed', (data) => {
+      if (data && data.visitorId === activeVisitorId) refreshActiveTranscript();
+    });
+  }
+
+  setInterval(loadVisitors, 30000);
+  setInterval(refreshActiveTranscript, 30000);
 </script>
 </body>
 </html>

@@ -137,6 +137,7 @@
   <button id="send" type="submit">Send</button>
 </form>
 
+<script src="/socket.io/socket.io.js"></script>
 <script>
   const chatEl = document.getElementById('chat');
   const chatForm = document.getElementById('chatForm');
@@ -145,6 +146,8 @@
   const precontact = document.getElementById('precontact');
   const precontactForm = document.getElementById('precontactForm');
   const welcomeBack = document.getElementById('welcomeBack');
+
+  let renderedCount = 0;
 
   function addMessage(role, text, loading = false) {
     const div = document.createElement('div');
@@ -155,22 +158,53 @@
     return div;
   }
 
+  // Keeps the widget in sync with the server (mainly for manual admin replies).
+  // Triggered instantly by a WebSocket event, with a slow fallback poll in
+  // case the socket connection drops (e.g. the free-tier server restarts).
+  async function syncMessages() {
+    try {
+      const res = await fetch('/api/messages');
+      if (!res.ok) return;
+      const data = await res.json();
+      const all = data.messages || [];
+      if (all.length > renderedCount) {
+        all.slice(renderedCount).forEach(m => {
+          addMessage(m.role === 'user' ? 'user' : 'assistant', m.content);
+        });
+        renderedCount = all.length;
+      }
+    } catch (e) {
+      // silent — next sync will retry
+    }
+  }
+
+  let socket = null;
+  function connectRealtime(visitorId) {
+    if (socket) return;
+    socket = io({ auth: { visitorId } });
+    socket.on('messages-changed', syncMessages);
+    setInterval(syncMessages, 20000); // resilience fallback
+  }
+
   function showChat(visitor, history, isReturning) {
     precontact.classList.add('hidden');
     chatForm.classList.remove('hidden');
 
     if (history && history.length) {
       history.forEach(m => addMessage(m.role === 'user' ? 'user' : 'assistant', m.content));
+      renderedCount = history.length;
     } else {
       const first = isReturning && visitor.name
         ? `Welcome back, ${visitor.name}! How can I help you today?`
         : `Hi ${visitor.name || 'there'}! I'm the AA Creative Emb support assistant — ask me anything about embroidery digitizing, vector art conversion, pricing, or turnaround times.`;
       addMessage('assistant', first);
+      renderedCount = 0; // this greeting isn't stored server-side, so count stays at true history length
     }
 
     if (isReturning && visitor.name) {
       welcomeBack.textContent = `Welcome back, ${visitor.name}`;
     }
+    connectRealtime(visitor.id);
     input.focus();
   }
 
@@ -232,6 +266,7 @@
 
       loadingDiv.textContent = data.reply;
       loadingDiv.classList.remove('loading');
+      renderedCount += 2; // the user message + this reply are now both stored server-side
     } catch (err) {
       loadingDiv.textContent = 'Sorry, something went wrong: ' + err.message;
       loadingDiv.classList.remove('loading');
